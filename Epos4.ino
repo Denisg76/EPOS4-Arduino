@@ -29,15 +29,15 @@
 #include <SoftwareSerial.h>  // For Arduino uno
 SoftwareSerial SerialEpcos(2, 3); // RX, TX for  arduino uno
 //#define SerialEpcos  Serial1 // pro micro or leonardo 
-
+#define ReceiveTimeOut 3000 // Maximum for waiting answer from EPOS4 in milli second
 #define MaxLenFrame 10  // max number of words in frame
 
 byte DataRead[264];
 byte ReadOpcode;
 byte len;
 int pDataRead;
-bool flagStuffing;
 word rxCRC;
+unsigned long CommErrorCode;
 enum read_status {
   RX_DLE,
   RX_STX,
@@ -110,7 +110,7 @@ void SendFrame(byte OpCode,word* pDataArray,byte numberOfwords)
   SerialEpcosStuffing(highByte(CRC));
 }
 
-void WriteObject(word Index, byte SubIndex,word* pArray)
+bool WriteObject(word Index, byte SubIndex,word* pArray)
 {
   word data[4];
   data[0]= 0x01 | (lowByte(Index)<<8);  // NodeId=1
@@ -118,16 +118,16 @@ void WriteObject(word Index, byte SubIndex,word* pArray)
   data[2]=pArray[0];
   data[3]=pArray[1];
   SendFrame(0x68,data,(byte)4);
-  ReadFrame();
+  return ReadFrame();
 }
 
-void ReadObject(word Index, byte SubIndex)
+bool ReadObject(word Index, byte SubIndex)
 {
   word data[2];
   data[0]= 0x01 | (lowByte(Index)<<8);  // NodeId=1
   data[1]= highByte(Index)|(((word)SubIndex )<< 8);
   SendFrame(0x60,data,(byte)2);
-  ReadFrame();
+  return ReadFrame();
 }
 
 // For debuging:
@@ -151,9 +151,11 @@ void print_rcv_data()
 bool ReadFrame()
 {
   int incomingByte = 0;   // for incoming SerialEpcos data
+  unsigned long timer=millis();
   read_st=RX_DLE;
   word pDataCRC[MaxLenFrame+2];
-  while (read_st!=RX_DONE)
+  CommErrorCode=0;
+  while ((read_st!=RX_DONE) and (millis()-timer < ReceiveTimeOut))
   {
     if (SerialEpcos.available() > 0)
     {
@@ -277,6 +279,12 @@ bool ReadFrame()
       }
     }
   }
+// Check Time out:
+  if (millis()-timer >= ReceiveTimeOut)
+  {
+    Serial.println("Serial Time out");
+    return false;
+  }
 // check CRC:
   pDataCRC[0] = ReadOpcode | ((word)len)<<8;
   for (int i=0 ;  i< len ;i++ )
@@ -290,7 +298,15 @@ bool ReadFrame()
     return false;
   }
 //  Serial.print("RCV CRC: ");Serial.println (CalcFieldCRC(pDataCRC, (word)(len+2)),HEX);
-//  print_rcv_data();
+// Check communication error code
+  CommErrorCode= DataRead[0] | (((word)DataRead[1])<<8) | (((unsigned long)DataRead[2])<<16) | (((unsigned long)DataRead[3])<<24);
+  if (CommErrorCode!=0)
+  {
+    Serial.print( "Communication Error Code:");
+    Serial.println(CommErrorCode,HEX);
+    return false;
+  }
+//  print_rcv_data(); 
 return true;
 }
 
@@ -299,7 +315,7 @@ word ReadStatusWord()
 {
   word statusWord;
   ReadObject(0x6041,0);
-  statusWord = DataRead[4] + ( DataRead[5]<<8);
+  statusWord = DataRead[4] + (((word) DataRead[5])<<8);
   Serial.print("Statusword: ");
   Serial.println(statusWord,HEX);
   return (statusWord);
